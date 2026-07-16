@@ -1,0 +1,8 @@
+{
+  "name": "SynthArchitecture",
+  "description": "Interactive infrastructure design and outage simulation canvas with dynamic AI architecture generation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
