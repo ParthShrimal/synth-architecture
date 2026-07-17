@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Activity, ArrowUpRight, Download, RotateCcw, Save, Sparkles, Zap, Trash2, Key, History, LogOut, User, SlidersHorizontal, Shield, ShieldAlert, Info } from 'lucide-react'
 import { ArchitectureCanvas } from './features/architecture/ArchitectureCanvas'
+import { generateProceduralArchitecture } from './utils/procedural'
 import { demoArchitectures } from './data/demoArchitectures'
 import type { Architecture } from './types/architecture'
 import { simulateNodeOutage, simulateTrafficSpike, type SimulationEvent } from './engine/simulation'
@@ -481,23 +482,32 @@ function App() {
       ]);
     } catch (err: any) {
       console.warn("Failed server-side generation, utilizing smart offline fallback:", err);
-      setErrorMsg(err.message || "Failed to generate dynamic architecture.");
+      setErrorMsg(`Generation server offline (${err.message}). Activating local procedural model generation to design your custom map!`);
       
-      const normalized = trimmedPrompt.toLowerCase()
-      let fallback: Architecture;
-      if (normalized.includes('game')) fallback = demoArchitectures.game;
-      else if (normalized.includes('commerce') || normalized.includes('shop')) fallback = demoArchitectures.commerce;
-      else fallback = demoArchitectures.payment;
+      const fallback = generateProceduralArchitecture(trimmedPrompt);
 
       setArchitecture(fallback);
       setBaseline(fallback);
       setSelectedNodeId(null);
+
+      // Save procedurally generated architecture to history as well so it's persisted!
+      const newHistoryItem = {
+        id: Math.random().toString(36).substring(2, 9),
+        prompt: trimmedPrompt,
+        architecture: fallback,
+        timestamp: new Date().toLocaleString(),
+      };
+      const updatedHistory = [newHistoryItem, ...history];
+      setHistory(updatedHistory);
+      const prefix = getUserKeyPrefix(user);
+      localStorage.setItem(`synth_architecture_history_${prefix}`, JSON.stringify(updatedHistory));
+
       setEvents((current) => [
         ...current,
         {
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          level: 'warning',
-          message: `Dynamic template selected as fallback: "${fallback.name}". (${err.message})`,
+          level: 'success',
+          message: `Procedural model engine synthesized customized map: "${fallback.name}". Saved to History.`,
         },
       ]);
     } finally {
