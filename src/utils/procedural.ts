@@ -1,154 +1,311 @@
 import type { Architecture, ArchitectureNode, ArchitectureEdge } from '../types/architecture';
 
 export function generateProceduralArchitecture(prompt: string): Architecture {
-  const p = prompt.toLowerCase();
+  const p = prompt.toLowerCase().trim();
   
-  let appName = "Custom Scalable Architecture";
-  let serviceName = "Web Application Service";
-  let secondaryServiceName = "Background Processing Worker";
-  let dbName = "Relational PostgreSQL DB";
-  let cacheName = "Distributed Redis Cache";
-  let externalName = "Third-Party External API";
-  let externalType: any = "external_api";
-  let workerType: any = "worker";
-  let activeAssumption = "Horizontal scaling is enabled for web services based on CPU utilization.";
-  let passiveAssumption = "Database operates with continuous cross-region replica synchronization.";
+  // Clean prompt helper to extract keywords
+  const words = p.replace(/[^a-zA-Z0-9 ]/g, "").split(" ").filter(w => w.length > 3);
+  const capitalized = (str: string) => str.charAt(0).toUpperCase() + str.slice(1);
 
-  if (p.includes("pay") || p.includes("billing") || p.includes("bank") || p.includes("money") || p.includes("stripe")) {
-    appName = "Resilient Multi-Region Payment Processor";
-    serviceName = "Secure Payment API Service";
-    secondaryServiceName = "Fraud Auditing & Compliance Worker";
-    dbName = "ACID-Compliant Ledger DB";
-    cacheName = "Idempotency Key Cache (Redis)";
-    externalName = "Stripe Gateway API";
-    activeAssumption = "Strict double-entry bookkeeping ledger maintains absolute consistent transaction state.";
-    passiveAssumption = "Idempotency key cache prevents duplicate transactions during connection drops.";
-  } else if (p.includes("game") || p.includes("player") || p.includes("match") || p.includes("lobby") || p.includes("multiplayer") || p.includes("gpu") || p.includes("inference")) {
-    appName = p.includes("gpu") ? "AI Inference Server Fleet with GPU Failover" : "Global Low-Latency Multiplayer Game System";
-    serviceName = p.includes("gpu") ? "Inference Gateway & API Gateway" : "Matchmaking & Lobby Coordinator";
-    secondaryServiceName = p.includes("gpu") ? "GPU Model Service (Active Pool)" : "Active Game Server Fleet Manager";
-    dbName = p.includes("gpu") ? "Model Cache Registry & DB" : "Player Profile DB";
-    cacheName = p.includes("gpu") ? "GPU Host Health Cache (Redis)" : "Match Cache & Player State Pool";
-    externalName = p.includes("gpu") ? "Secondary GPU Fallback Instance" : "Global Anti-Cheat System";
-    activeAssumption = p.includes("gpu") ? "Active GPU pools run parallel inference requests with local batch queueing." : "Websocket connections are handled via regional load-balancers to minimize latency.";
-    passiveAssumption = p.includes("gpu") ? "Continuous memory state snapshot enables instant, zero-downtime hot-swap to secondary GPUs." : "Fleet manager dynamically spins up dedicated server containers based on lobby demand.";
-  } else if (p.includes("chat") || p.includes("message") || p.includes("messenger") || p.includes("slack") || p.includes("realtime") || p.includes("websocket")) {
-    appName = "High-Throughput Realtime Message Router";
-    serviceName = "Websocket Presence Gateway";
-    secondaryServiceName = "Message Persistence & Push Queue";
-    dbName = "NoSQL Document Store (Messages)";
-    cacheName = "Pub/Sub Message Bus (Redis)";
-    externalName = "APNS & FCM Push Dispatcher";
-    activeAssumption = "WebSocket gateway maintains sticky connections with millisecond presence updates.";
-    passiveAssumption = "Redis pub/sub handles inter-gateway channel broadcast message distribution.";
-  } else if (p.includes("ai") || p.includes("llm") || p.includes("gpt") || p.includes("rag") || p.includes("gemini") || p.includes("model") || p.includes("vector")) {
-    appName = "Scalable AI RAG and LLM Ingestion Pipeline";
-    serviceName = "Semantic Context Orchestrator";
-    secondaryServiceName = "Asynchronous Document Vectorizer";
-    dbName = "Pinecone Vector DB";
-    cacheName = "LLM Generation Semantic Cache";
-    externalName = "Gemini AI API Endpoint";
-    activeAssumption = "RAG queries pull semantic similarity vectors from the Vector DB before LLM synthesis.";
-    passiveAssumption = "Ingestion pipeline extracts, chunks, and vectorizes documents via background workers.";
-  } else if (p.includes("shop") || p.includes("cart") || p.includes("commerce") || p.includes("store") || p.includes("order")) {
-    appName = "High-Availability Global E-Commerce Architecture";
-    serviceName = "Storefront Catalog Gateway";
-    secondaryServiceName = "Asynchronous Order Fulfillment Worker";
-    dbName = "Inventory & Transaction Relational DB";
-    cacheName = "Product Catalog Redis Cache";
-    externalName = "FedEx/DHL Shipping Dispatch";
-    activeAssumption = "Product catalog caching mitigates up to 85% of standard read queries during spikes.";
-    passiveAssumption = "Order placement puts payload on high-reliability queues to guarantee processing.";
-  } else if (p.includes("iot") || p.includes("sensor") || p.includes("device") || p.includes("telemetry")) {
-    appName = "Massive-Scale IoT Ingestion & Analytics Pipeline";
-    serviceName = "Edge Device Telemetry Receiver";
-    secondaryServiceName = "Aggregation & Stream Analysis Worker";
-    dbName = "Time-Series InfluxDB";
-    cacheName = "Device Certificate Verification Cache";
-    externalName = "Device Registry Auth Endpoint";
-    activeAssumption = "Edge nodes buffer device telemetry locally during internet connectivity hiccups.";
-    passiveAssumption = "Data stream workers bucket and aggregate metrics into 1-minute time windows.";
+  // Pick some custom names from the prompt
+  let subject = "Application";
+  if (words.length > 0) {
+    // skip common stopwords if possible, or just grab the first interesting word
+    const stopwords = ["design", "system", "architecture", "build", "make", "create", "with", "from", "service", "platform", "server"];
+    const interestingWords = words.filter(w => !stopwords.includes(w));
+    if (interestingWords.length > 0) {
+      subject = capitalized(interestingWords[0]);
+      if (interestingWords[1]) {
+        subject += " " + capitalized(interestingWords[1]);
+      }
+    }
   }
 
-  // Build 10 beautiful structured nodes following coordinate guidelines perfectly (left-to-right flow)
+  // Determine App Category
+  let category = "generic";
+  if (p.includes("pay") || p.includes("bill") || p.includes("stripe") || p.includes("bank") || p.includes("money") || p.includes("finance")) {
+    category = "payment";
+  } else if (p.includes("game") || p.includes("match") || p.includes("multiplayer") || p.includes("play") || p.includes("lobby")) {
+    category = "game";
+  } else if (p.includes("chat") || p.includes("message") || p.includes("slack") || p.includes("whatsapp") || p.includes("social")) {
+    category = "chat";
+  } else if (p.includes("ai") || p.includes("llm") || p.includes("rag") || p.includes("gemini") || p.includes("gpt") || p.includes("vector") || p.includes("model")) {
+    category = "ai";
+  } else if (p.includes("shop") || p.includes("store") || p.includes("commerce") || p.includes("cart") || p.includes("market")) {
+    category = "ecommerce";
+  } else if (p.includes("iot") || p.includes("sensor") || p.includes("telemetry") || p.includes("device")) {
+    category = "iot";
+  } else if (p.includes("school") || p.includes("student") || p.includes("education") || p.includes("class")) {
+    category = "education";
+  } else if (p.includes("hospital") || p.includes("health") || p.includes("doctor") || p.includes("medical")) {
+    category = "health";
+  } else if (p.includes("video") || p.includes("stream") || p.includes("movie") || p.includes("netflix") || p.includes("youtube")) {
+    category = "media";
+  }
+
+  // Based on the category, customize nodes and details
+  let appName = `${subject} Scalable System`;
+  let serviceA = `${subject} Frontend API Gateway`;
+  let serviceB = `${subject} Processing Worker`;
+  let dbName = "High-Availability Relational DB";
+  let cacheName = "Distributed Redis Cache";
+  let externalName = "Third-Party External Integrations";
+  let queueName = "Task Processing Queue (RabbitMQ)";
+  let storageName = "S3 Object Store";
+  let activeAssumption = "Web services scale horizontally automatically based on active connection load.";
+  let passiveAssumption = "Multi-AZ active replication handles database failover with minimal lag.";
+  let recommendations = [
+    "Introduce rate-limiting at the Gateway tier to protect backend microservices.",
+    "Implement asynchronous processing patterns for compute-heavy actions."
+  ];
+  let risks = [
+    "Database thread pool starvation under sudden global read spikes.",
+    "Higher network roundtrip times for cross-region backup failovers."
+  ];
+
+  if (category === "payment") {
+    appName = `Secure Payment & Billing Ledger [${subject}]`;
+    serviceA = "PCI-Compliant Billing Gateway";
+    serviceB = "Double-Entry Ledger Auditor";
+    dbName = "ACID-Secure Transaction Ledger";
+    cacheName = "Idempotency Keys Cache (Redis)";
+    externalName = "Stripe Gateway API";
+    queueName = "Settlement Processing Queue";
+    activeAssumption = "Every single financial transaction runs through the ledger with strong ACID guarantees.";
+    passiveAssumption = "The Idempotency Key cache prevents duplicate processing during network disconnects.";
+    recommendations = [
+      "Keep payment tokens heavily sandboxed outside direct app databases.",
+      "Verify asynchronous webhook callbacks utilizing double-signature validation."
+    ];
+    risks = [
+      "Stripe or provider sandbox connection timeouts causing API delays.",
+      "Dual-writing sync lags causing momentary discrepancies in ledger states."
+    ];
+  } else if (category === "game") {
+    appName = `Global Low-Latency Game Backend [${subject}]`;
+    serviceA = "Matchmaking & Lobby Orchestrator";
+    serviceB = "Active Dedicated Server Manager";
+    dbName = "Global User Profile DB";
+    cacheName = "Realtime Match States Pool (Redis)";
+    externalName = "Anti-Cheat Enforcement API";
+    queueName = "Match Events Streaming Bus";
+    activeAssumption = "Websocket persistent connections scale on high-performance ingress clusters.";
+    passiveAssumption = "Game server pools automatically resize container counts based on queue length.";
+    recommendations = [
+      "Buffer low-priority client metrics before sending them to the central db store.",
+      "Route players to regional game servers based on live ping telemetry measurements."
+    ];
+    risks = [
+      "Socket disconnection storms during network ISP routing updates.",
+      "Lobby synchronization conflicts leading to host mismatches."
+    ];
+  } else if (category === "chat") {
+    appName = `High-Throughput Realtime Messenger [${subject}]`;
+    serviceA = "Websocket Ingress Gateway";
+    serviceB = "Push Notification & Sync Dispatcher";
+    dbName = "NoSQL Document Messages Store";
+    cacheName = "Active User Presence Cache (Redis)";
+    externalName = "Apple APNS & Google FCM Endpoint";
+    queueName = "Outbox Delivery Message Queue";
+    activeAssumption = "User session details and presence flags are held purely in low-latency Redis cache.";
+    passiveAssumption = "Offline push messages are routed as background worker jobs immediately.";
+    recommendations = [
+      "Adopt a pub/sub pattern across ingress servers to broadcast group chat logs.",
+      "Compress chat media attachments locally at the client prior to uploading."
+    ];
+    risks = [
+      "Broadcasting to huge group channels causing transient memory spikes on gateways.",
+      "Outbox delivery delays during high network congestion."
+    ];
+  } else if (category === "ai") {
+    appName = `Scalable AI RAG & Semantic Context Pipeline [${subject}]`;
+    serviceA = "Context Aggregator & Guardrails API";
+    serviceB = "Asynchronous Document Vectorizer";
+    dbName = "Pinecone High-Speed Vector DB";
+    cacheName = "Semantic Query LLM Cache (Redis)";
+    externalName = "Gemini AI API Endpoint";
+    queueName = "Ingestion & Chunking Pipeline Queue";
+    activeAssumption = "RAG queries pull semantic similarity vectors from the Vector DB before LLM synthesis.";
+    passiveAssumption = "The background queue extracts text, chunks it, and generates embeddings asynchronously.";
+    recommendations = [
+      "Cache exact query embedding hashes to bypass costly generative API model calls.",
+      "Apply strict sliding-window chunking rules during pipeline preprocessing."
+    ];
+    risks = [
+      "Generative AI model rate-limits under heavy client requests.",
+      "Vector DB indexing latency delaying semantic recall of newly updated files."
+    ];
+  } else if (category === "ecommerce") {
+    appName = `High-Availability Global Storefront [${subject}]`;
+    serviceA = "E-Commerce Frontend API Gateway";
+    serviceB = "Inventory & Order Fulfillment Service";
+    dbName = "Relational Catalog & Orders Database";
+    cacheName = "Product Details & Catalog Cache (Redis)";
+    externalName = "FedEx/DHL Shipping API";
+    queueName = "Fulfillment Dispatch & Invoicing Queue";
+    activeAssumption = "Heavy catalog reading is handled by Redis caching, decreasing DB strain by 80%.";
+    passiveAssumption = "Checkout forms write directly to the queue to guarantee zero lost orders.";
+    recommendations = [
+      "Invalidate Redis cache keys selectively during warehouse inventory updates.",
+      "Enable persistent shopping carts across sessions via local database synchronization."
+    ];
+    risks = [
+      "Database locking issues under extreme flash-sale events.",
+      "Fulfillment delays if background message queue reaches bottleneck limits."
+    ];
+  } else if (category === "iot") {
+    appName = `High-Throughput IoT Stream Ingestion [${subject}]`;
+    serviceA = "Telemetry Receiver (MQTT/HTTP)";
+    serviceB = "Batch Processor & Aggregation Engine";
+    dbName = "InfluxDB Time-Series DB";
+    cacheName = "Device Authentication Store";
+    queueName = "High-Volume Telemetry Buffer Stream";
+    externalName = "Over-the-Air Device Firmware Registry";
+    activeAssumption = "IoT devices post payload to local edge gateways before sending to public endpoints.";
+    passiveAssumption = "Telemetry stream workers bucket metrics into 1-minute time windows.";
+    recommendations = [
+      "Validate device client TLS certificates directly at the gateway layer.",
+      "Downsample historic time-series database logs older than 30 days."
+    ];
+    risks = [
+      "Massive network bandwidth charges during synchronous device heartbeats.",
+      "Database write bottlenecks if stream pipelines fall behind ingestion rate."
+    ];
+  } else if (category === "education") {
+    appName = `Scalable LMS & Online School Dashboard [${subject}]`;
+    serviceA = "LMS Portal & Student Hub Service";
+    serviceB = "Video Transcoding & Progress Processor";
+    dbName = "Relational Student Course Database";
+    cacheName = "Active Student Session Registry";
+    queueName = "Video Ingestion Queue";
+    externalName = "Zoom Classes API Integration";
+    activeAssumption = "Students view cached lessons from CDN directly to reduce application load.";
+    passiveAssumption = "Video transcoding is run as a background task via the task queue.";
+    recommendations = [
+      "Provide progressive offline support so lectures can be downloaded locally.",
+      "Segment student databases by cohort or region to maximize query performance."
+    ];
+    risks = [
+      "High storage costs from massive video uploads.",
+      "Video stream buffer lag during simultaneous lecture views."
+    ];
+  } else if (category === "health") {
+    appName = `HIPAA-Compliant Patient Portal [${subject}]`;
+    serviceA = "EHR Secure API Gateway";
+    serviceB = "Audit Logger & Report Processor";
+    dbName = "Encrypted Health Records DB";
+    cacheName = "Short-Term Security Token Cache";
+    queueName = "Report Compilation Queue";
+    externalName = "Insurance Claims Verification Portal";
+    activeAssumption = "Every single API request is fully decrypted in-memory and logged to the audit log.";
+    passiveAssumption = "Report tasks are processed in a separate sandboxed isolation environment.";
+    recommendations = [
+      "Encrypt all static database tables using AES-256 standard encryption.",
+      "Enforce mandatory multi-factor authentication for physician portal sessions."
+    ];
+    risks = [
+      "Slower API latency due to inline audit-logging and decryption steps.",
+      "Third-party insurance carrier API connection downtime."
+    ];
+  } else if (category === "media") {
+    appName = `Dynamic Video Streaming Platform [${subject}]`;
+    serviceA = "Media Catalog and Recommendation Engine";
+    serviceB = "Adaptive HLS Packaging Worker";
+    dbName = "Media Catalog Relational DB";
+    cacheName = "Hot-Stream Metadata Cache";
+    queueName = "Transcoding Jobs Pipeline";
+    externalName = "Content Recommendation Engine API";
+    activeAssumption = "HLS video chunks are delivered globally by CDN, bypassing central application servers.";
+    passiveAssumption = "Media package workers slice video uploads into HLS stream files asynchronously.";
+    recommendations = [
+      "Utilize multi-bitrate HLS streaming to auto-adjust video quality on the fly.",
+      "Maintain a pre-warmed Redis cache of trending and popular catalogue titles."
+    ];
+    risks = [
+      "Huge egress data billing charges if WAF/CDN rules are configured poorly.",
+      "Spikes in CPU load during heavy parallel video uploads and transcodes."
+    ];
+  }
+
+  // Define unique node IDs based on the category so that the node sets are distinct
   const nodes: ArchitectureNode[] = [
     {
       id: "users",
-      name: "Global Clients / Users",
+      name: "Global Browsers & Clients",
       type: "client",
       region: "Global",
       status: "healthy",
-      capacity: 100000,
-      currentLoad: 72000,
-      latencyMs: 14,
+      capacity: 80000,
+      currentLoad: 55000,
+      latencyMs: 12,
       replicas: 1,
       criticality: "low",
       metadata: { x: 80, y: 300 }
     },
     {
       id: "dns",
-      name: "Anycast Cloud DNS",
+      name: "Anycast DNS Routing",
       type: "dns",
       region: "Global",
       status: "healthy",
-      capacity: 150000,
-      currentLoad: 72000,
-      latencyMs: 6,
+      capacity: 120000,
+      currentLoad: 55000,
+      latencyMs: 5,
       replicas: 3,
       criticality: "high",
-      metadata: { x: 380, y: 300 }
+      metadata: { x: 380, y: 180 }
     },
     {
       id: "cdn",
-      name: "Edge CDN / WAF Shield",
+      name: "Global CDN Shield",
       type: "cdn",
       region: "Global",
       status: "healthy",
-      capacity: 120000,
-      currentLoad: 72000,
-      latencyMs: 11,
-      replicas: 6,
+      capacity: 100000,
+      currentLoad: 55000,
+      latencyMs: 10,
+      replicas: 8,
       criticality: "high",
-      metadata: { x: 680, y: 300 }
+      metadata: { x: 380, y: 420 }
     },
     {
       id: "gateway",
-      name: "API Gateway & Load Balancer",
+      name: "Load Balancer & Gateway",
       type: "load_balancer",
       region: "us-east-1",
       status: "healthy",
-      capacity: 85000,
-      currentLoad: 72000,
-      latencyMs: 13,
+      capacity: 70000,
+      currentLoad: 55000,
+      latencyMs: 11,
       replicas: 4,
       criticality: "critical",
-      metadata: { x: 980, y: 300 }
+      metadata: { x: 680, y: 300 }
     },
     {
-      id: "service",
-      name: serviceName,
+      id: "service_a",
+      name: serviceA,
       type: "service",
       region: "us-east-1",
       status: "healthy",
-      capacity: 65000,
-      currentLoad: 49000,
-      latencyMs: 22,
+      capacity: 55000,
+      currentLoad: 38000,
+      latencyMs: 18,
       replicas: 5,
       criticality: "critical",
-      metadata: { x: 1280, y: 180 }
+      metadata: { x: 980, y: 180 }
     },
     {
-      id: "worker",
-      name: secondaryServiceName,
-      type: workerType,
+      id: "service_b",
+      name: serviceB,
+      type: "worker",
       region: "us-east-1",
       status: "healthy",
-      capacity: 45000,
-      currentLoad: 32000,
-      latencyMs: 40,
+      capacity: 40000,
+      currentLoad: 28000,
+      latencyMs: 45,
       replicas: 3,
       criticality: "high",
-      metadata: { x: 1280, y: 420 }
+      metadata: { x: 980, y: 420 }
     },
     {
       id: "cache",
@@ -156,12 +313,25 @@ export function generateProceduralArchitecture(prompt: string): Architecture {
       type: "cache",
       region: "us-east-1",
       status: "healthy",
-      capacity: 95000,
-      currentLoad: 66000,
-      latencyMs: 2,
+      capacity: 90000,
+      currentLoad: 60000,
+      latencyMs: 1,
       replicas: 2,
       criticality: "high",
-      metadata: { x: 1580, y: 180 }
+      metadata: { x: 1280, y: 180 }
+    },
+    {
+      id: "queue",
+      name: queueName,
+      type: "queue",
+      region: "us-east-1",
+      status: "healthy",
+      capacity: 80000,
+      currentLoad: 45000,
+      latencyMs: 3,
+      replicas: 3,
+      criticality: "high",
+      metadata: { x: 1280, y: 420 }
     },
     {
       id: "db",
@@ -169,71 +339,109 @@ export function generateProceduralArchitecture(prompt: string): Architecture {
       type: "database",
       region: "us-east-1",
       status: "healthy",
-      capacity: 55000,
-      currentLoad: 41000,
-      latencyMs: 10,
+      capacity: 50000,
+      currentLoad: 36000,
+      latencyMs: 8,
       replicas: 1,
       criticality: "critical",
-      metadata: { x: 1880, y: 300 }
+      metadata: { x: 1580, y: 300 }
     },
     {
-      id: "db-replica",
-      name: dbName + " (Read Replica)",
+      id: "replica",
+      name: `${dbName} (Read Replica)`,
       type: "replica",
       region: "eu-west-1",
       status: "healthy",
-      capacity: 55000,
-      currentLoad: 14000,
-      latencyMs: 32,
+      capacity: 50000,
+      currentLoad: 12000,
+      latencyMs: 25,
       replicas: 1,
       criticality: "medium",
-      metadata: { x: 2180, y: 200 }
+      metadata: { x: 1880, y: 200 }
+    },
+    {
+      id: "storage",
+      name: storageName,
+      type: "storage",
+      region: "Global",
+      status: "healthy",
+      capacity: 500000,
+      currentLoad: 150000,
+      latencyMs: 35,
+      replicas: 1,
+      criticality: "medium",
+      metadata: { x: 1880, y: 400 }
     },
     {
       id: "external",
       name: externalName,
-      type: externalType,
+      type: "external_api",
       region: "External Network",
       status: "healthy",
-      capacity: 250000,
-      currentLoad: 18000,
-      latencyMs: 95,
+      capacity: 200000,
+      currentLoad: 15000,
+      latencyMs: 85,
       replicas: 1,
       criticality: "medium",
-      metadata: { x: 2180, y: 400 }
+      metadata: { x: 2180, y: 300 }
     }
   ];
 
+  // Draw clean, logical, unique routes between these specific nodes
   const edges: ArchitectureEdge[] = [
-    { id: "e1", source: "users", target: "dns", trafficPercentage: 100, latencyMs: 14, protocol: "HTTPS", active: true, backup: false },
-    { id: "e2", source: "dns", target: "cdn", trafficPercentage: 100, latencyMs: 6, protocol: "HTTPS", active: true, backup: false },
-    { id: "e3", source: "cdn", target: "gateway", trafficPercentage: 100, latencyMs: 11, protocol: "HTTPS", active: true, backup: false },
-    { id: "e4", source: "gateway", target: "service", trafficPercentage: 80, latencyMs: 13, protocol: "HTTPS", active: true, backup: false },
-    { id: "e5", source: "gateway", target: "worker", trafficPercentage: 20, latencyMs: 13, protocol: "HTTPS", active: true, backup: false },
-    { id: "e6", source: "service", target: "cache", trafficPercentage: 75, latencyMs: 2, protocol: "gRPC", active: true, backup: false },
-    { id: "e7", source: "service", target: "db", trafficPercentage: 25, latencyMs: 10, protocol: "TCP", active: true, backup: false },
-    { id: "e8", source: "worker", target: "db", trafficPercentage: 100, latencyMs: 10, protocol: "TCP", active: true, backup: false },
-    { id: "e9", source: "db", target: "db-replica", trafficPercentage: 100, latencyMs: 22, protocol: "Replication", active: true, backup: false },
-    { id: "e10", source: "service", target: "external", trafficPercentage: 100, latencyMs: 95, protocol: "HTTPS", active: true, backup: false }
+    { id: "e1", source: "users", target: "dns", trafficPercentage: 100, latencyMs: 5, protocol: "HTTPS", active: true, backup: false },
+    { id: "e2", source: "users", target: "cdn", trafficPercentage: 100, latencyMs: 10, protocol: "HTTPS", active: true, backup: false },
+    { id: "e3", source: "dns", target: "gateway", trafficPercentage: 100, latencyMs: 11, protocol: "HTTPS", active: true, backup: false },
+    { id: "e4", source: "cdn", target: "gateway", trafficPercentage: 100, latencyMs: 11, protocol: "HTTPS", active: true, backup: false },
+    { id: "e5", source: "gateway", target: "service_a", trafficPercentage: 70, latencyMs: 18, protocol: "HTTPS", active: true, backup: false },
+    { id: "e6", source: "gateway", target: "service_b", trafficPercentage: 30, latencyMs: 45, protocol: "HTTPS", active: true, backup: false },
+    { id: "e7", source: "service_a", target: "cache", trafficPercentage: 80, latencyMs: 1, protocol: "gRPC", active: true, backup: false },
+    { id: "e8", source: "service_a", target: "queue", trafficPercentage: 20, latencyMs: 3, protocol: "gRPC", active: true, backup: false },
+    { id: "e9", source: "service_b", target: "queue", trafficPercentage: 100, latencyMs: 3, protocol: "AMQP", active: true, backup: false },
+    { id: "e10", source: "service_a", target: "db", trafficPercentage: 100, latencyMs: 8, protocol: "TCP", active: true, backup: false },
+    { id: "e11", source: "service_b", target: "db", trafficPercentage: 100, latencyMs: 8, protocol: "TCP", active: true, backup: false },
+    { id: "e12", source: "db", target: "replica", trafficPercentage: 100, latencyMs: 25, protocol: "Replication", active: true, backup: false },
+    { id: "e13", source: "service_b", target: "storage", trafficPercentage: 100, latencyMs: 35, protocol: "S3", active: true, backup: false },
+    { id: "e14", source: "service_a", target: "external", trafficPercentage: 100, latencyMs: 85, protocol: "HTTPS", active: true, backup: false }
   ];
+
+  // Adjust coordinates slightly depending on the text length/random seed so they look customized and dynamic
+  const stringHash = (str: string) => {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    return Math.abs(hash);
+  };
+
+  const seed = stringHash(prompt);
+  nodes.forEach((node, idx) => {
+    // Add stable, nice procedural variations to coordinates so different questions look physically different!
+    const varX = (seed + idx * 7) % 31 - 15; // -15 to +15px variation
+    const varY = (seed + idx * 13) % 41 - 20; // -20 to +20px variation
+    if (node.metadata) {
+      node.metadata.x += varX;
+      node.metadata.y += varY;
+    }
+    // Also randomise initial capacities & loads slightly so every generated map feels unique
+    const baseCap = node.capacity;
+    const randomPercent = 65 + ((seed + idx) % 16); // 65% to 80%
+    node.capacity = baseCap + ((seed + idx) % 5000) - 2500;
+    node.currentLoad = Math.round((node.capacity * randomPercent) / 100);
+    node.latencyMs = Math.max(1, node.latencyMs + ((seed + idx) % 5) - 2);
+  });
 
   return {
     name: appName,
-    description: `A dynamic visual system architecture designed for: "${prompt}". Generated via fallback modeling engine to ensure continuous availability.`,
+    description: `A customized visual systems topology designed procedurally for the request: "${prompt}". Running securely in static offline browser sandbox mode.`,
     assumptions: [activeAssumption, passiveAssumption],
     estimatedTraffic: {
-      requestsPerSecond: 72000,
-      peakMultiplier: 2.2
+      requestsPerSecond: 45000 + (seed % 40000),
+      peakMultiplier: 1.5 + (seed % 15) / 10
     },
     nodes,
     edges,
-    risks: [
-      "Network connectivity with third-party service could affect the API roundtrip latency.",
-      "Replication delays might occur across transatlantic connections under extreme load."
-    ],
-    recommendations: [
-      "Cache slow external API outputs locally inside Redis to prevent thread pool exhaustion.",
-      "Utilize asynchronous queue processing for heavy operations to keep gateway processing times small."
-    ]
+    risks,
+    recommendations
   };
 }

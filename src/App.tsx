@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Activity, ArrowUpRight, Download, RotateCcw, Save, Sparkles, Zap, Trash2, Key, History, LogOut, User, SlidersHorizontal, Shield, ShieldAlert, Info } from 'lucide-react'
 import { ArchitectureCanvas } from './features/architecture/ArchitectureCanvas'
 import { generateProceduralArchitecture } from './utils/procedural'
+import { generateViaGeminiClient, generateViaOpenAIClient } from './utils/directApi'
 import { demoArchitectures } from './data/demoArchitectures'
 import type { Architecture } from './types/architecture'
 import { simulateNodeOutage, simulateTrafficSpike, type SimulationEvent } from './engine/simulation'
@@ -489,13 +490,71 @@ function App() {
         },
       ]);
     } catch (err: any) {
-      console.warn("Failed server-side generation, utilizing smart offline fallback:", err);
+      console.warn("Server generation endpoint unavailable, attempting direct browser AI client synthesis:", err);
       
       const isStaticOr404 = err.message && (err.message.includes("404") || err.message.includes("not found") || err.message.includes("fetch") || err.message.includes("Failed to fetch"));
-      if (isStaticOr404) {
-        setErrorMsg(`Vercel_Static_Mode: Since this application is running on Vercel / static hosting, the client-side procedural model engine has designed your custom infrastructure map! For live server-side AI synthesis (Gemini & OpenAI), run the app in a full-stack container environment.`);
+      
+      // If there are client-side keys, try direct generation from the browser!
+      if (customOpenaiKey || customGeminiKey) {
+        try {
+          let directData: Architecture;
+          if (customOpenaiKey) {
+            setEvents((current) => [
+              ...current,
+              {
+                time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                level: 'info',
+                message: `Static Server Mode (Vercel): Initiating direct browser API call using your OpenAI API Key...`,
+              },
+            ]);
+            directData = await generateViaOpenAIClient(trimmedPrompt, customOpenaiKey, openaiModel);
+          } else {
+            setEvents((current) => [
+              ...current,
+              {
+                time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                level: 'info',
+                message: `Static Server Mode (Vercel): Initiating direct browser API call using your Gemini API Key...`,
+              },
+            ]);
+            directData = await generateViaGeminiClient(trimmedPrompt, customGeminiKey);
+          }
+
+          setArchitecture(directData);
+          setBaseline(directData);
+          setSelectedNodeId(null);
+
+          const newHistoryItem = {
+            id: Math.random().toString(36).substring(2, 9),
+            prompt: trimmedPrompt,
+            architecture: directData,
+            timestamp: new Date().toLocaleString(),
+          };
+          const updatedHistory = [newHistoryItem, ...history];
+          setHistory(updatedHistory);
+          const prefix = getUserKeyPrefix(user);
+          localStorage.setItem(`synth_architecture_history_${prefix}`, JSON.stringify(updatedHistory));
+
+          setEvents((current) => [
+            ...current,
+            {
+              time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              level: 'success',
+              message: `Direct Browser AI Engine synthesized custom map successfully: "${directData.name}".`,
+            },
+          ]);
+          return; // Succeeded! Bypass procedural generation
+        } catch (directErr: any) {
+          console.error("Direct browser AI generation failed, falling back to procedural:", directErr);
+          // Let error fall through to standard procedural generator, but with direct API error message
+          setErrorMsg(`Static host direct AI call failed: ${directErr.message || directErr}. Activating client-side procedural generator.`);
+        }
       } else {
-        setErrorMsg(`Generation server offline (${err.message}). Activating local procedural model generation to design your custom map!`);
+        if (isStaticOr404) {
+          setErrorMsg(`Vercel_Static_Mode: Since this application is running on Vercel / static hosting, the client-side procedural model engine has designed your custom infrastructure map! For live server-side AI synthesis (Gemini & OpenAI), run the app in a full-stack container environment.`);
+        } else {
+          setErrorMsg(`Generation server offline (${err.message}). Activating local procedural model generation to design your custom map!`);
+        }
       }
       
       const fallback = generateProceduralArchitecture(trimmedPrompt);
