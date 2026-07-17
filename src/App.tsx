@@ -334,9 +334,17 @@ function App() {
 
   useEffect(() => {
     fetch('/api/key-status')
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error('API server unavailable or running in static mode');
+        }
+        return res.json();
+      })
       .then((data) => setKeyStatus(data))
-      .catch((err) => console.error('Error fetching key status:', err))
+      .catch(() => {
+        // App running in static mode on Vercel/similar host, fallback silently
+        setKeyStatus({ openaiKeySet: false, geminiKeySet: false });
+      });
   }, [])
 
   const selectedNode = useMemo(
@@ -482,7 +490,13 @@ function App() {
       ]);
     } catch (err: any) {
       console.warn("Failed server-side generation, utilizing smart offline fallback:", err);
-      setErrorMsg(`Generation server offline (${err.message}). Activating local procedural model generation to design your custom map!`);
+      
+      const isStaticOr404 = err.message && (err.message.includes("404") || err.message.includes("not found") || err.message.includes("fetch") || err.message.includes("Failed to fetch"));
+      if (isStaticOr404) {
+        setErrorMsg(`Vercel_Static_Mode: Since this application is running on Vercel / static hosting, the client-side procedural model engine has designed your custom infrastructure map! For live server-side AI synthesis (Gemini & OpenAI), run the app in a full-stack container environment.`);
+      } else {
+        setErrorMsg(`Generation server offline (${err.message}). Activating local procedural model generation to design your custom map!`);
+      }
       
       const fallback = generateProceduralArchitecture(trimmedPrompt);
 
@@ -767,23 +781,34 @@ function App() {
           )}
 
           {errorMsg && (
-            <div style={{ animation: 'fadeIn 0.2s ease-out' }} className="mt-2 text-xs text-amber-300 bg-amber-950/50 border border-amber-900/60 rounded p-2.5 flex flex-col gap-1.5 justify-between">
-              <div className="flex items-start justify-between gap-1.5">
-                <span>
-                  ⚠️ <strong>OpenAI Simulation Fallback Loaded:</strong> {errorMsg.includes("OPENAI_API_KEY") ? (
-                    <>
-                      Set your <strong>OPENAI_API_KEY</strong> in the top-right Settings menu (Secrets) to enable dynamic OpenAI diagram generation using <strong>{openaiModel}</strong>!
-                    </>
-                  ) : errorMsg}
-                </span>
-                <button onClick={() => setErrorMsg(null)} className="text-amber-400 hover:text-amber-200 font-bold px-1.5 cursor-pointer">✕</button>
-              </div>
-              {errorMsg.includes("OPENAI_API_KEY") && (
-                <div className="text-[10px] text-amber-400/80 border-t border-amber-900/40 pt-1 font-mono">
-                  Tip: To make live API requests to {openaiModel}, go to Settings &gt; Secrets in the top-right, create a secret called <strong>OPENAI_API_KEY</strong>, and paste your key.
+            errorMsg.startsWith("Vercel_Static_Mode:") ? (
+              <div style={{ animation: 'fadeIn 0.2s ease-out' }} className="mt-2 text-xs text-sky-300 bg-sky-950/55 border border-sky-900/60 rounded p-2.5 flex flex-col gap-1.5 justify-between">
+                <div className="flex items-start justify-between gap-1.5">
+                  <span>
+                    ⚡ <strong>Static Local Mode (Vercel):</strong> {errorMsg.replace("Vercel_Static_Mode: ", "").replace("Vercel_Static_Mode:", "")}
+                  </span>
+                  <button onClick={() => setErrorMsg(null)} className="text-sky-400 hover:text-sky-200 font-bold px-1.5 cursor-pointer">✕</button>
                 </div>
-              )}
-            </div>
+              </div>
+            ) : (
+              <div style={{ animation: 'fadeIn 0.2s ease-out' }} className="mt-2 text-xs text-amber-300 bg-amber-950/50 border border-amber-900/60 rounded p-2.5 flex flex-col gap-1.5 justify-between">
+                <div className="flex items-start justify-between gap-1.5">
+                  <span>
+                    ⚠️ <strong>OpenAI Simulation Fallback Loaded:</strong> {errorMsg.includes("OPENAI_API_KEY") ? (
+                      <>
+                        Set your <strong>OPENAI_API_KEY</strong> in the top-right Settings menu (Secrets) to enable dynamic OpenAI diagram generation using <strong>{openaiModel}</strong>!
+                      </>
+                    ) : errorMsg}
+                  </span>
+                  <button onClick={() => setErrorMsg(null)} className="text-amber-400 hover:text-amber-200 font-bold px-1.5 cursor-pointer">✕</button>
+                </div>
+                {errorMsg.includes("OPENAI_API_KEY") && (
+                  <div className="text-[10px] text-amber-400/80 border-t border-amber-900/40 pt-1 font-mono">
+                    Tip: To make live API requests to {openaiModel}, go to Settings &gt; Secrets in the top-right, create a secret called <strong>OPENAI_API_KEY</strong>, and paste your key.
+                  </div>
+                )}
+              </div>
+            )
           )}
         </div>
 
