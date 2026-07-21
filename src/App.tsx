@@ -3,11 +3,12 @@ import { Activity, ArrowUpRight, Download, RotateCcw, Save, Sparkles, Zap, Trash
 import { ArchitectureCanvas } from './features/architecture/ArchitectureCanvas'
 import { generateProceduralArchitecture } from './utils/procedural'
 import { generateViaGeminiClient, generateViaOpenAIClient } from './utils/directApi'
+import { exportAsJson, exportAsMarkdown, exportAsHtmlReport, exportAsSvg } from './utils/exporter'
 import { demoArchitectures } from './data/demoArchitectures'
 import type { Architecture } from './types/architecture'
 import { simulateNodeOutage, simulateTrafficSpike, type SimulationEvent } from './engine/simulation'
 import { scoreArchitecture } from './engine/scoring'
-import { signInWithGoogle, signOutFirebase } from './lib/firebase'
+import { signInWithGoogle, signOutFirebase, createFirebaseUserWithEmailAndPassword, signInWithFirebaseEmailAndPassword } from './lib/firebase'
 import './App.css'
 
 const examples = [
@@ -95,6 +96,7 @@ function App() {
 
   const [currentView, setCurrentView] = useState<'map' | 'history'>('map');
   const [showAccountModal, setShowAccountModal] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
 
   // Pre-configured Firebase defaults using the requested project ID: syntharchitecture-5540d
   const firebaseConfig = useMemo(() => {
@@ -110,13 +112,11 @@ function App() {
   const [firebaseError, setFirebaseError] = useState('');
   const [isFirebaseSigningIn, setIsFirebaseSigningIn] = useState(false);
   const [copiedDomain, setCopiedDomain] = useState<'dev' | 'pre' | 'current' | null>(null);
-  const [loginTab, setLoginTab] = useState<'google' | 'userid'>('google');
-  const [simulatedEmail, setSimulatedEmail] = useState('');
-  const [simulatedName, setSimulatedName] = useState('');
-  const [otpSent, setOtpSent] = useState(false);
-  const [generatedOtp, setGeneratedOtp] = useState<string | null>(null);
-  const [enteredOtp, setEnteredOtp] = useState('');
-  const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
+  const [loginTab, setLoginTab] = useState<'google' | 'email_password'>('email_password');
+  const [firebaseEmail, setFirebaseEmail] = useState('');
+  const [firebasePassword, setFirebasePassword] = useState('');
+  const [isFirebaseSignUp, setIsFirebaseSignUp] = useState(false);
+  const [firebaseSignUpName, setFirebaseSignUpName] = useState('');
 
   const [tempOpenaiKey, setTempOpenaiKey] = useState(() => customOpenaiKey);
   const [tempGeminiKey, setTempGeminiKey] = useState(() => customGeminiKey);
@@ -180,6 +180,78 @@ function App() {
     }
   };
 
+  const handleFirebaseEmailAndPasswordAuth = async () => {
+    if (!firebaseEmail.trim() || !firebasePassword) {
+      setFirebaseError('Please enter both your email address and password.');
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(firebaseEmail.trim())) {
+      setFirebaseError('Please enter a valid email address.');
+      return;
+    }
+    if (firebasePassword.length < 6) {
+      setFirebaseError('Password must be at least 6 characters long.');
+      return;
+    }
+
+    setIsFirebaseSigningIn(true);
+    setFirebaseError('');
+    try {
+      let credential;
+      if (isFirebaseSignUp) {
+        credential = await createFirebaseUserWithEmailAndPassword(
+          firebaseConfig,
+          firebaseEmail,
+          firebasePassword,
+          firebaseSignUpName
+        );
+      } else {
+        credential = await signInWithFirebaseEmailAndPassword(
+          firebaseConfig,
+          firebaseEmail,
+          firebasePassword
+        );
+      }
+
+      const fbUser = credential.user;
+      const updatedUser = {
+        isLoggedIn: true,
+        displayName: fbUser.displayName || fbUser.email?.split('@')[0] || 'Cloud Architect',
+        email: fbUser.email || undefined,
+        photoURL: fbUser.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(fbUser.email || 'User')}`
+      };
+
+      setUser(updatedUser);
+      localStorage.setItem('synth_user_session', JSON.stringify(updatedUser));
+      
+      setEvents(curr => [
+        ...curr,
+        {
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          level: 'success',
+          message: isFirebaseSignUp 
+            ? `🎉 Successfully registered and signed in for: "${fbUser.email}"!`
+            : `🎉 Successfully authenticated and signed in for: "${fbUser.email}"!`,
+        }
+      ]);
+      setFirebaseError('');
+    } catch (err: any) {
+      console.warn('Authentication status:', err.message || err);
+      if (err.code === 'auth/email-already-in-use' || err.message?.includes('email-already-in-use')) {
+        setFirebaseError('This email is already registered. Please sign in instead.');
+      } else if (err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential' || err.message?.includes('invalid-credential')) {
+        setFirebaseError('Invalid email or password. Please verify your credentials.');
+      } else if (err.code === 'auth/operation-not-allowed' || err.message?.includes('operation-not-allowed')) {
+        setFirebaseError('auth/operation-not-allowed');
+      } else {
+        setFirebaseError(err.message || 'Authentication failed. Please try again.');
+      }
+    } finally {
+      setIsFirebaseSigningIn(false);
+    }
+  };
+
   const handleRealGoogleSignIn = async () => {
     setIsFirebaseSigningIn(true);
     setFirebaseError('');
@@ -207,7 +279,7 @@ function App() {
       ]);
       setFirebaseError('');
     } catch (err: any) {
-      console.error(err);
+      console.warn('Google Authentication status:', err.message || err);
       if (err.code === 'auth/unauthorized-domain' || (err.message && err.message.includes('unauthorized-domain'))) {
         setFirebaseError('unauthorized-domain');
       } else if (err.code === 'auth/popup-closed-by-user' || (err.message && err.message.includes('popup-closed-by-user'))) {
@@ -218,84 +290,6 @@ function App() {
     } finally {
       setIsFirebaseSigningIn(false);
     }
-  };
-
-  const handleSendSimulatedOtp = () => {
-    if (!simulatedName.trim()) {
-      setFirebaseError('Please enter a display name.');
-      return;
-    }
-    if (!simulatedEmail.trim()) {
-      setFirebaseError('Email address is important and required for verification.');
-      return;
-    }
-    // Simple email regex check
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(simulatedEmail.trim())) {
-      setFirebaseError('Please enter a valid email address.');
-      return;
-    }
-
-    setFirebaseError('');
-    setIsVerifyingOtp(true);
-
-    try {
-      // Generate a secure 6-digit OTP code
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-      setGeneratedOtp(code);
-      setOtpSent(true);
-
-      setEvents(curr => [
-        ...curr,
-        {
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          level: 'info',
-          message: `🔑 OTP Code sent to ${simulatedEmail.trim()}: "${code}" (Use this to verify your session)`,
-        }
-      ]);
-    } catch (err: any) {
-      setFirebaseError(`OTP Generation Error: ${err.message || 'Failed to send OTP.'}`);
-    } finally {
-      setIsVerifyingOtp(false);
-    }
-  };
-
-  const handleVerifySimulatedOtp = () => {
-    if (!enteredOtp.trim()) {
-      setFirebaseError('Please enter the 6-digit verification code.');
-      return;
-    }
-
-    if (enteredOtp.trim() !== generatedOtp) {
-      setFirebaseError('Invalid verification code. Please enter the correct OTP shown in the active notifications/events.');
-      return;
-    }
-
-    const emailToUse = simulatedEmail.trim();
-    const updatedUser = {
-      isLoggedIn: true,
-      displayName: simulatedName.trim(),
-      email: emailToUse,
-      photoURL: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(simulatedName.trim())}`
-    };
-    
-    setUser(updatedUser);
-    localStorage.setItem('synth_user_session', JSON.stringify(updatedUser));
-    
-    setEvents(curr => [
-      ...curr,
-      {
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        level: 'success',
-        message: `Successfully verified and connected session for: "${emailToUse}"!`,
-      }
-    ]);
-
-    // Reset temporary states
-    setOtpSent(false);
-    setGeneratedOtp(null);
-    setEnteredOtp('');
-    setFirebaseError('');
   };
 
   const handleAccountLogin = () => {
@@ -655,6 +649,97 @@ function App() {
     });
   }
 
+  const triggerDownload = (content: string, filename: string, contentType: string) => {
+    const blob = new Blob([content], { type: contentType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleSaveJson = () => {
+    try {
+      const data = exportAsJson(architecture);
+      const slug = architecture.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      triggerDownload(data, `${slug}-architecture.json`, "application/json");
+      
+      setEvents(curr => [
+        ...curr,
+        {
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          level: 'success',
+          message: `Systems configuration saved locally: Downloaded "${slug}-architecture.json".`
+        }
+      ]);
+    } catch (err: any) {
+      console.error("Save JSON failed:", err);
+    }
+  };
+
+  const handleExportMarkdown = () => {
+    try {
+      const data = exportAsMarkdown(architecture);
+      const slug = architecture.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      triggerDownload(data, `${slug}-spec.md`, "text/markdown");
+      
+      setEvents(curr => [
+        ...curr,
+        {
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          level: 'success',
+          message: `Technical design document exported: Downloaded "${slug}-spec.md".`
+        }
+      ]);
+      setShowExportModal(false);
+    } catch (err: any) {
+      console.error("Export Markdown failed:", err);
+    }
+  };
+
+  const handleExportHtml = () => {
+    try {
+      const data = exportAsHtmlReport(architecture);
+      const slug = architecture.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      triggerDownload(data, `${slug}-report.html`, "text/html");
+      
+      setEvents(curr => [
+        ...curr,
+        {
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          level: 'success',
+          message: `Interactive offline report exported: Downloaded "${slug}-report.html".`
+        }
+      ]);
+      setShowExportModal(false);
+    } catch (err: any) {
+      console.error("Export HTML failed:", err);
+    }
+  };
+
+  const handleExportSvg = () => {
+    try {
+      const data = exportAsSvg(architecture);
+      const slug = architecture.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      triggerDownload(data, `${slug}-topology.svg`, "image/svg+xml");
+      
+      setEvents(curr => [
+        ...curr,
+        {
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          level: 'success',
+          message: `Vector topology diagram exported: Downloaded "${slug}-topology.svg".`
+        }
+      ]);
+      setShowExportModal(false);
+    } catch (err: any) {
+      console.error("Export SVG failed:", err);
+    }
+  };
+
   const hasPreviousMatch = useMemo(() => {
     return history.some(item => item.prompt.toLowerCase().trim() === prompt.toLowerCase().trim());
   }, [history, prompt]);
@@ -747,8 +832,8 @@ function App() {
             <span>{user?.isLoggedIn ? user.displayName : 'Guest User'}</span>
           </div>
 
-          <button><Save size={15} /> Save</button>
-          <button><Download size={15} /> Export</button>
+          <button type="button" onClick={handleSaveJson} title="Save Blueprint JSON"><Save size={15} /> Save</button>
+          <button type="button" onClick={() => setShowExportModal(true)} title="Export Specifications or Diagrams"><Download size={15} /> Export</button>
 
           {/* Account Profile / Settings & API Keys Button (Slider Style from Image) */}
           <button 
@@ -1361,11 +1446,6 @@ function App() {
                       }
                       setUser(null);
                       localStorage.removeItem('synth_user_session');
-                      setSimulatedEmail('');
-                      setSimulatedName('');
-                      setOtpSent(false);
-                      setGeneratedOtp(null);
-                      setEnteredOtp('');
                       setEvents(curr => [
                         ...curr,
                         { time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), level: 'info', message: 'Logged out. Returned to Guest session.' }
@@ -1393,12 +1473,12 @@ function App() {
                 /* If Not Logged In: Google Login & Simulated login tabs */
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   {/* Tab Selector */}
-                  <div style={{ display: 'flex', borderBottom: '1px solid #1e293b', paddingBottom: '2px', gap: '8px' }}>
+                  <div style={{ display: 'flex', borderBottom: '1px solid #1e293b', paddingBottom: '2px', gap: '8px', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
                     <button
                       type="button"
                       onClick={() => { setLoginTab('google'); setFirebaseError(''); }}
                       style={{
-                        padding: '6px 12px',
+                        padding: '6px 10px',
                         fontSize: '11px',
                         fontWeight: 600,
                         backgroundColor: 'transparent',
@@ -1406,6 +1486,7 @@ function App() {
                         color: loginTab === 'google' ? '#c084fc' : '#94a3b8',
                         borderBottom: loginTab === 'google' ? '2px solid #c084fc' : '2px solid transparent',
                         cursor: 'pointer',
+                        whiteSpace: 'nowrap',
                         transition: 'all 0.15s ease'
                       }}
                     >
@@ -1413,25 +1494,26 @@ function App() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => { setLoginTab('userid'); setFirebaseError(''); }}
+                      onClick={() => { setLoginTab('email_password'); setFirebaseError(''); }}
                       style={{
-                        padding: '6px 12px',
+                        padding: '6px 10px',
                         fontSize: '11px',
                         fontWeight: 600,
                         backgroundColor: 'transparent',
                         border: 'none',
-                        color: loginTab === 'userid' ? '#c084fc' : '#94a3b8',
-                        borderBottom: loginTab === 'userid' ? '2px solid #c084fc' : '2px solid transparent',
+                        color: loginTab === 'email_password' ? '#c084fc' : '#94a3b8',
+                        borderBottom: loginTab === 'email_password' ? '2px solid #c084fc' : '2px solid transparent',
                         cursor: 'pointer',
+                        whiteSpace: 'nowrap',
                         transition: 'all 0.15s ease'
                       }}
                     >
-                      User ID
+                      Email/Password
                     </button>
                   </div>
 
                   {loginTab === 'google' ? (
-                    /* Google Sign-In with Preset Firebase */
+                    /* Google Sign-In */
                     <button
                       type="button"
                       disabled={isFirebaseSigningIn}
@@ -1463,166 +1545,128 @@ function App() {
                       <span>{isFirebaseSigningIn ? 'Opening Popup...' : 'Sign in with Google'}</span>
                     </button>
                   ) : (
-                    /* User ID (Bypass & Custom OTP Login) */
+                    /* Email & Password Signup / Signin */
                     <div style={{ border: '1px solid #1e293b', borderRadius: '8px', padding: '14px', backgroundColor: '#030712', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      <h4 style={{ fontSize: '11px', fontWeight: 600, color: '#38bdf8', margin: '0 0 2px 0', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        <Zap size={12} className="text-sky-400" /> User ID Session Setup
+                      <h4 style={{ fontSize: '11px', fontWeight: 600, color: '#c084fc', margin: '0 0 2px 0', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <Key size={12} className="text-purple-400" /> {isFirebaseSignUp ? 'Account Creation' : 'Sign In'}
                       </h4>
                       
-                      {!otpSent ? (
-                        <>
-                          <p style={{ fontSize: '11px', color: '#64748b', margin: '0 0 4px 0', lineHeight: '1.4' }}>
-                            To completely bypass Google account restrictions or whitelist limits, enter your preferred user identity and email address below:
-                          </p>
+                      <p style={{ fontSize: '11px', color: '#64748b', margin: '0 0 4px 0', lineHeight: '1.4' }}>
+                        {isFirebaseSignUp 
+                          ? 'Register your email and password to create a secure persistent cloud drafting workspace.' 
+                          : 'Sign in using your registered email and password to access your secure architectural layouts.'}
+                      </p>
 
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                            <label style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>DISPLAY NAME (REQUIRED)</label>
-                            <input
-                              type="text"
-                              placeholder="e.g. Parth"
-                              value={simulatedName}
-                              onChange={(e) => setSimulatedName(e.target.value)}
-                              style={{
-                                padding: '8px 10px',
-                                backgroundColor: '#090d16',
-                                border: '1px solid #1e293b',
-                                borderRadius: '6px',
-                                color: '#f8fafc',
-                                fontSize: '12px',
-                                fontFamily: 'inherit'
-                              }}
-                            />
-                          </div>
-
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                            <label style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>EMAIL ADDRESS (REQUIRED)</label>
-                            <input
-                              type="email"
-                              placeholder="e.g. pathsh06@gmail.com"
-                              value={simulatedEmail}
-                              onChange={(e) => setSimulatedEmail(e.target.value)}
-                              style={{
-                                padding: '8px 10px',
-                                backgroundColor: '#090d16',
-                                border: '1px solid #1e293b',
-                                borderRadius: '6px',
-                                color: '#f8fafc',
-                                fontSize: '12px',
-                                fontFamily: 'inherit'
-                              }}
-                            />
-                          </div>
-
-                          <button
-                            type="button"
-                            disabled={isVerifyingOtp}
-                            onClick={handleSendSimulatedOtp}
+                      {isFirebaseSignUp && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <label style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>DISPLAY NAME (OPTIONAL)</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Alex"
+                            value={firebaseSignUpName}
+                            onChange={(e) => setFirebaseSignUpName(e.target.value)}
                             style={{
-                              marginTop: '4px',
-                              padding: '10px',
-                              backgroundColor: '#38bdf8',
-                              color: '#0f172a',
-                              border: 'none',
+                              padding: '8px 10px',
+                              backgroundColor: '#090d16',
+                              border: '1px solid #1e293b',
                               borderRadius: '6px',
+                              color: '#f8fafc',
                               fontSize: '12px',
-                              fontWeight: 600,
-                              cursor: isVerifyingOtp ? 'not-allowed' : 'pointer',
-                              transition: 'background-color 0.15s ease',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              gap: '6px'
+                              fontFamily: 'inherit'
                             }}
-                            className="hover:bg-sky-400"
-                          >
-                            <span>Send Verification OTP</span>
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <div style={{ padding: '10px', backgroundColor: 'rgba(56, 189, 248, 0.08)', border: '1px solid rgba(56, 189, 248, 0.2)', borderRadius: '6px', fontSize: '11px', color: '#93c5fd', lineHeight: '1.4' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600, color: '#38bdf8', marginBottom: '4px' }}>
-                              <span>📨 Verification Code Generated</span>
-                            </div>
-                            <p style={{ margin: '0 0 6px 0', color: '#cbd5e1' }}>
-                              An OTP was simulated for <strong>{simulatedEmail}</strong>. Use the code below to complete authorization.
-                            </p>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: '#090d16', padding: '6px 10px', borderRadius: '4px', border: '1px solid #1e293b' }}>
-                              <span style={{ fontSize: '10px', color: '#94a3b8', textTransform: 'uppercase', fontWeight: 600 }}>Your OTP Code:</span>
-                              <strong style={{ fontFamily: 'monospace', color: '#38bdf8', fontSize: '14px', letterSpacing: '0.05em' }}>{generatedOtp}</strong>
-                            </div>
-                          </div>
-
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                            <label style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>ENTER 6-DIGIT OTP</label>
-                            <input
-                              type="text"
-                              maxLength={6}
-                              placeholder="e.g. 123456"
-                              value={enteredOtp}
-                              onChange={(e) => setEnteredOtp(e.target.value.replace(/\D/g, ''))}
-                              style={{
-                                padding: '8px 10px',
-                                backgroundColor: '#090d16',
-                                border: '1px solid #1e293b',
-                                borderRadius: '6px',
-                                color: '#f8fafc',
-                                fontSize: '14px',
-                                fontWeight: 600,
-                                fontFamily: 'monospace',
-                                letterSpacing: '0.1em',
-                                textAlign: 'center'
-                              }}
-                            />
-                          </div>
-
-                          <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setOtpSent(false);
-                                setGeneratedOtp(null);
-                                setEnteredOtp('');
-                                setFirebaseError('');
-                              }}
-                              style={{
-                                flex: 1,
-                                padding: '10px',
-                                backgroundColor: 'transparent',
-                                color: '#94a3b8',
-                                border: '1px solid #1e293b',
-                                borderRadius: '6px',
-                                fontSize: '12px',
-                                fontWeight: 600,
-                                cursor: 'pointer',
-                                transition: 'all 0.15s ease'
-                              }}
-                              className="hover:border-gray-500 hover:text-white"
-                            >
-                              Back
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleVerifySimulatedOtp}
-                              style={{
-                                flex: 2,
-                                padding: '10px',
-                                backgroundColor: '#38bdf8',
-                                color: '#0f172a',
-                                border: 'none',
-                                borderRadius: '6px',
-                                fontSize: '12px',
-                                fontWeight: 600,
-                                cursor: 'pointer',
-                                transition: 'background-color 0.15s ease'
-                              }}
-                              className="hover:bg-sky-400"
-                            >
-                              Verify & Connect
-                            </button>
-                          </div>
-                        </>
+                          />
+                        </div>
                       )}
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <label style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>EMAIL ADDRESS</label>
+                        <input
+                          type="email"
+                          placeholder="e.g. pathsh06@gmail.com"
+                          value={firebaseEmail}
+                          onChange={(e) => setFirebaseEmail(e.target.value)}
+                          style={{
+                            padding: '8px 10px',
+                            backgroundColor: '#090d16',
+                            border: '1px solid #1e293b',
+                            borderRadius: '6px',
+                            color: '#f8fafc',
+                            fontSize: '12px',
+                            fontFamily: 'inherit'
+                          }}
+                        />
+                      </div>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <label style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>PASSWORD</label>
+                        <input
+                          type="password"
+                          placeholder="Minimum 6 characters"
+                          value={firebasePassword}
+                          onChange={(e) => setFirebasePassword(e.target.value)}
+                          style={{
+                            padding: '8px 10px',
+                            backgroundColor: '#090d16',
+                            border: '1px solid #1e293b',
+                            borderRadius: '6px',
+                            color: '#f8fafc',
+                            fontSize: '12px',
+                            fontFamily: 'inherit'
+                          }}
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={isFirebaseSigningIn}
+                        onClick={handleFirebaseEmailAndPasswordAuth}
+                        style={{
+                          marginTop: '6px',
+                          padding: '10px',
+                          backgroundColor: '#c084fc',
+                          color: '#0f172a',
+                          border: 'none',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: isFirebaseSigningIn ? 'not-allowed' : 'pointer',
+                          transition: 'background-color 0.15s ease',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px'
+                        }}
+                        className="hover:bg-purple-400"
+                      >
+                        <span>
+                          {isFirebaseSigningIn 
+                            ? (isFirebaseSignUp ? 'Creating Account...' : 'Signing In...') 
+                            : (isFirebaseSignUp ? 'Create Account' : 'Sign In')}
+                        </span>
+                      </button>
+
+                      <div style={{ marginTop: '4px', textAlign: 'center' }}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsFirebaseSignUp(!isFirebaseSignUp);
+                            setFirebaseError('');
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: '#94a3b8',
+                            fontSize: '11px',
+                            cursor: 'pointer',
+                            textDecoration: 'underline'
+                          }}
+                          className="hover:text-purple-400"
+                        >
+                          {isFirebaseSignUp 
+                            ? 'Already have an account? Sign In' 
+                            : "Don't have an account? Sign Up / Register"}
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1635,7 +1679,7 @@ function App() {
                     <span>🔒 Domain Authorization Needed</span>
                   </div>
                   <p style={{ margin: '0 0 10px 0', color: '#cbd5e1' }}>
-                    Your current browser domain is not whitelisted in your Firebase Console yet. Please authorize it to enable secure Google Sign-In:
+                    Your current browser domain is not whitelisted in your console settings yet. Please authorize it to enable secure Google Sign-In:
                   </p>
                   
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px', backgroundColor: '#090d16', padding: '10px', borderRadius: '6px', border: '1px solid #1e293b' }}>
@@ -1702,7 +1746,7 @@ function App() {
                   <div style={{ fontSize: '10px', color: '#94a3b8', lineHeight: 1.4 }}>
                     <strong>How to add:</strong>
                     <ol style={{ paddingLeft: '14px', margin: '4px 0 0 0', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                      <li>Click <strong>Authentication</strong> on your Firebase sidebar.</li>
+                      <li>Click <strong>Authentication</strong> on your project settings sidebar.</li>
                       <li>Go to the <strong>Settings</strong> tab at the top.</li>
                       <li>Click <strong>Authorized domains</strong>.</li>
                       <li>Click <strong>Add domain</strong>, paste the domain, and click <strong>Add</strong>!</li>
@@ -1715,27 +1759,83 @@ function App() {
                     <Info size={14} className="text-sky-400" />
                     <span>Google Sign-In Cancelled</span>
                   </div>
+                  <p style={{ margin: '0', color: '#cbd5e1' }}>
+                    The Google authentication popup was closed before completing the sign-in. Please try again or switch to the Email/Password tab to sign in.
+                  </p>
+                </div>
+              ) : firebaseError && (firebaseError.includes('operation-not-allowed') || firebaseError.includes('auth/operation-not-allowed')) ? (
+                <div style={{ padding: '14px', backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '8px', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.5 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, color: '#f87171', marginBottom: '8px', fontSize: '12px' }}>
+                    <ShieldAlert size={14} className="text-red-400" />
+                    <span>⚠️ Email/Password Auth Disabled</span>
+                  </div>
                   <p style={{ margin: '0 0 10px 0', color: '#cbd5e1' }}>
-                    The Google authentication popup was closed before completing the sign-in. If you want to bypass Google constraints entirely, you can switch to the <strong>User ID</strong> tab above to connect instantly.
+                    The <strong>Email/Password</strong> provider must be enabled in your project's console settings to support standard user registration and login.
+                  </p>
+                  
+                  <div style={{ fontSize: '11px', color: '#cbd5e1', backgroundColor: '#090d16', padding: '12px', borderRadius: '6px', border: '1px solid #1e293b', marginBottom: '10px' }}>
+                    <strong>How to enable the provider:</strong>
+                    <ol style={{ paddingLeft: '16px', margin: '6px 0 0 0', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                      <li>Open your <strong><a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" style={{ color: '#c084fc', textDecoration: 'underline' }}>Console settings</a></strong>.</li>
+                      <li>Go to <strong>Authentication</strong> &rarr; <strong>Sign-in method</strong> tab.</li>
+                      <li>Click <strong>Add new provider</strong> (or click edit on <strong>Email/Password</strong> if already listed).</li>
+                      <li>Enable the <strong>Email/Password</strong> switch.</li>
+                      <li>Click <strong>Save</strong>!</li>
+                    </ol>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLoginTab('google');
+                      setFirebaseError('');
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '8px 10px',
+                      backgroundColor: 'transparent',
+                      border: '1px solid #1e293b',
+                      color: '#94a3b8',
+                      borderRadius: '4px',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
+                    className="hover:text-white hover:border-gray-500"
+                  >
+                    Use Google Sign-In instead
+                  </button>
+                </div>
+              ) : firebaseError && firebaseError.includes('already registered') ? (
+                <div style={{ padding: '12px', backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '8px', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.5 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, color: '#fca5a5', marginBottom: '6px' }}>
+                    <Info size={14} className="text-red-400" />
+                    <span>Account Already Exists</span>
+                  </div>
+                  <p style={{ margin: '0 0 10px 0', color: '#cbd5e1' }}>
+                    An account with this email address has already been created.
                   </p>
                   <button
                     type="button"
                     onClick={() => {
-                      setLoginTab('userid');
+                      setIsFirebaseSignUp(false);
                       setFirebaseError('');
                     }}
                     style={{
-                      padding: '4px 10px',
-                      backgroundColor: 'rgba(56, 189, 248, 0.15)',
-                      border: '1px solid rgba(56, 189, 248, 0.3)',
-                      borderRadius: '4px',
-                      color: '#38bdf8',
-                      fontSize: '10px',
+                      width: '100%',
+                      padding: '8px 10px',
+                      backgroundColor: '#c084fc',
+                      color: '#0f172a',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '11px',
                       fontWeight: 600,
-                      cursor: 'pointer'
+                      cursor: 'pointer',
+                      transition: 'background-color 0.15s ease'
                     }}
+                    className="hover:bg-purple-400"
                   >
-                    Switch to User ID Session
+                    Switch to Sign In
                   </button>
                 </div>
               ) : firebaseError ? (
@@ -1804,6 +1904,162 @@ function App() {
                 className="hover:bg-slate-900"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showExportModal && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          style={{ animation: 'fadeIn 0.15s ease-out', position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0, 0, 0, 0.85)', backdropFilter: 'blur(4px)' }}
+        >
+          <div className="bg-slate-950 border border-slate-800 rounded-xl max-w-md w-full p-6 shadow-2xl relative animate-in fade-in zoom-in-95 duration-150" style={{ backgroundColor: '#020617', border: '1px solid #1e293b', borderRadius: '12px', padding: '24px', width: '100%', maxWidth: '440px', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)', position: 'relative' }}>
+            
+            <button 
+              onClick={() => setShowExportModal(false)}
+              className="absolute text-gray-400 hover:text-gray-200 font-bold cursor-pointer transition-colors"
+              style={{ position: 'absolute', top: '16px', right: '16px', border: 'none', background: 'none', color: '#94a3b8', fontSize: '16px', cursor: 'pointer', zIndex: 10 }}
+            >
+              ✕
+            </button>
+            
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', borderBottom: '1px solid #0f172a', paddingBottom: '12px' }}>
+              <div style={{ padding: '8px', backgroundColor: 'rgba(59, 130, 246, 0.15)', border: '1px solid #3b82f6', borderRadius: '8px', color: '#60a5fa' }}>
+                <Download size={20} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '14px', fontWeight: 600, color: '#f8fafc', margin: 0 }}>Export System Architecture</h3>
+                <p style={{ fontSize: '11px', color: '#64748b', margin: '2px 0 0 0' }}>
+                  Export your compiled microservices topology & design spec
+                </p>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              
+              {/* Option 1: Markdown Design Specification */}
+              <button
+                type="button"
+                onClick={handleExportMarkdown}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  padding: '12px',
+                  backgroundColor: 'rgba(15, 23, 42, 0.6)',
+                  border: '1px solid #1e293b',
+                  borderRadius: '8px',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                  width: '100%'
+                }}
+                className="hover:border-blue-500 hover:bg-slate-900 group"
+              >
+                <div style={{ padding: '8px', backgroundColor: 'rgba(59, 130, 246, 0.1)', color: '#60a5fa', borderRadius: '6px', minWidth: '36px', textAlign: 'center' }}>
+                  <span style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold' }}>MD</span>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '12.5px', fontWeight: 600, color: '#f1f5f9' }}>System Design Document (.md)</div>
+                  <div style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '2px', whiteSpace: 'normal', lineHeight: '1.4' }}>Comprehensive systems overview, inventory tables, risk registers, and priority recommendations.</div>
+                </div>
+              </button>
+
+              {/* Option 2: High-Res Vector Topology Diagram */}
+              <button
+                type="button"
+                onClick={handleExportSvg}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  padding: '12px',
+                  backgroundColor: 'rgba(15, 23, 42, 0.6)',
+                  border: '1px solid #1e293b',
+                  borderRadius: '8px',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                  width: '100%'
+                }}
+                className="hover:border-blue-500 hover:bg-slate-900 group"
+              >
+                <div style={{ padding: '8px', backgroundColor: 'rgba(139, 92, 246, 0.1)', color: '#a78bfa', borderRadius: '6px', minWidth: '36px', textAlign: 'center' }}>
+                  <span style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold' }}>SVG</span>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '12.5px', fontWeight: 600, color: '#f1f5f9' }}>Vector Topology Diagram (.svg)</div>
+                  <div style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '2px', whiteSpace: 'normal', lineHeight: '1.4' }}>Scalable vector map of your current network nodes, failover standby routing paths, and capacity states.</div>
+                </div>
+              </button>
+
+              {/* Option 3: Interactive Offline Specification Report */}
+              <button
+                type="button"
+                onClick={handleExportHtml}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  padding: '12px',
+                  backgroundColor: 'rgba(15, 23, 42, 0.6)',
+                  border: '1px solid #1e293b',
+                  borderRadius: '8px',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                  width: '100%'
+                }}
+                className="hover:border-blue-500 hover:bg-slate-900 group"
+              >
+                <div style={{ padding: '8px', backgroundColor: 'rgba(16, 185, 129, 0.1)', color: '#34d399', borderRadius: '6px', minWidth: '36px', textAlign: 'center' }}>
+                  <span style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold' }}>HTML</span>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '12.5px', fontWeight: 600, color: '#f1f5f9' }}>Interactive Offline Report (.html)</div>
+                  <div style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '2px', whiteSpace: 'normal', lineHeight: '1.4' }}>A self-contained HTML report with live tables, metrics meters, and reliability summaries.</div>
+                </div>
+              </button>
+
+              {/* Option 4: Full Blueprint Configuration JSON */}
+              <button
+                type="button"
+                onClick={handleSaveJson}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  padding: '12px',
+                  backgroundColor: 'rgba(15, 23, 42, 0.6)',
+                  border: '1px solid #1e293b',
+                  borderRadius: '8px',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                  width: '100%'
+                }}
+                className="hover:border-blue-500 hover:bg-slate-900 group"
+              >
+                <div style={{ padding: '8px', backgroundColor: 'rgba(239, 68, 68, 0.1)', color: '#f87171', borderRadius: '6px', minWidth: '36px', textAlign: 'center' }}>
+                  <span style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold' }}>JSON</span>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '12.5px', fontWeight: 600, color: '#f1f5f9' }}>Blueprint Configuration JSON (.json)</div>
+                  <div style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '2px', whiteSpace: 'normal', lineHeight: '1.4' }}>Raw configuration schema for archiving, restoring, or loading back into SynthArchitecture.</div>
+                </div>
+              </button>
+
+            </div>
+
+            <div style={{ marginTop: '20px', paddingTop: '12px', borderTop: '1px solid #0f172a', display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <button 
+                onClick={() => setShowExportModal(false)}
+                style={{ padding: '6px 16px', backgroundColor: '#0f172a', color: '#cbd5e1', borderRadius: '6px', fontSize: '12px', cursor: 'pointer', border: '1px solid #1e293b', fontWeight: 500 }}
+                className="hover:bg-slate-900"
+              >
+                Cancel
               </button>
             </div>
           </div>

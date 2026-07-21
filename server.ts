@@ -3,6 +3,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import OpenAI from "openai";
+import nodemailer from "nodemailer";
 
 // Helper function to retry transient API failures with backoff
 async function retryWithBackoff<T>(fn: () => Promise<T>, retries = 1, delay = 800): Promise<T> {
@@ -270,11 +271,183 @@ function generateProceduralFallback(prompt: string): any {
   };
 }
 
+// Server-side promise timeout helper
+function withTimeout<T>(promise: Promise<T>, ms = 3000, errorMsg = "Operation timed out"): Promise<T> {
+  let id: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    id = setTimeout(() => reject(new Error(errorMsg)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(id));
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   app.use(express.json());
+
+  // In-memory OTP storage
+  const otpStore = new Map<string, { code: string; expiresAt: number; displayName: string }>();
+
+  // API route to send OTP via SMTP or Resend, with safe sandbox simulation fallback
+  app.post("/api/send-otp", async (req: express.Request, res: express.Response) => {
+    try {
+      const { email, displayName, code } = req.body;
+      if (!email || typeof email !== "string") {
+        return res.status(400).json({ error: "Email is required" });
+      }
+      if (!displayName || typeof displayName !== "string") {
+        return res.status(400).json({ error: "Display name is required" });
+      }
+
+      const trimmedEmail = email.trim().toLowerCase();
+      // Generate secure 6-digit OTP code or use the one provided by client-side Firebase flow
+      const otpCode = code && typeof code === "string" ? code.trim() : Math.floor(100000 + Math.random() * 900000).toString();
+      const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes expiration
+
+      otpStore.set(trimmedEmail, { code: otpCode, expiresAt, displayName: displayName.trim() });
+
+      const subject = "SynthArchitecture - Verification Code";
+      const textBody = `Hello ${displayName},\n\nYour 6-digit verification code for SynthArchitecture is: ${otpCode}\n\nThis code will expire in 5 minutes.\n\nBest regards,\nSynthArchitecture Team`;
+      const htmlBody = `
+        <div style="font-family: sans-serif; padding: 24px; background-color: #020617; color: #f8fafc; border-radius: 12px; border: 1px solid #1e293b; max-width: 480px; margin: 0 auto;">
+          <h2 style="color: #38bdf8; margin-top: 0;">SynthArchitecture</h2>
+          <p style="font-size: 14px; color: #94a3b8; line-height: 1.5;">Hello <strong>${displayName}</strong>,</p>
+          <p style="font-size: 14px; color: #cbd5e1; line-height: 1.5;">To complete your session authorization and connect your account, please use the 6-digit verification code below:</p>
+          <div style="background-color: #090d16; border: 1px solid #1e293b; padding: 16px; border-radius: 8px; text-align: center; margin: 20px 0;">
+            <span style="font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.1em; display: block; margin-bottom: 6px;">Your verification code</span>
+            <strong style="font-size: 28px; color: #38bdf8; font-family: monospace; letter-spacing: 0.1em;">${otpCode}</strong>
+          </div>
+          <p style="font-size: 12px; color: #64748b; line-height: 1.5; margin-bottom: 0;">This code will expire in 5 minutes. If you did not request this code, you can safely ignore this email.</p>
+        </div>
+      `;
+
+      // 1. Try Resend if configured
+      if (process.env.RESEND_API_KEY) {
+        try {
+          console.log(`Attempting to send OTP via Resend API to ${trimmedEmail}...`);
+          const resendResponse = await withTimeout(
+            fetch("https://api.resend.com/emails", {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${process.env.RESEND_API_KEY}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                from: process.env.SMTP_FROM || "onboarding@resend.dev",
+                to: trimmedEmail,
+                subject: subject,
+                html: htmlBody,
+              }),
+            }),
+            3000,
+            "Resend API timed out"
+          );
+
+          if (resendResponse.ok) {
+            console.log(`OTP successfully sent via Resend API to ${trimmedEmail}.`);
+            return res.json({ success: true, simulated: false });
+          } else {
+            const errText = await resendResponse.text();
+            console.warn(`Resend API failed: ${errText}`);
+          }
+        } catch (err: any) {
+          console.warn(`Error dispatching via Resend API: ${err.message}`);
+        }
+      }
+
+      // 2. Try SMTP via Nodemailer if configured
+      if (process.env.SMTP_HOST) {
+        try {
+          console.log(`Attempting to send OTP via SMTP to ${trimmedEmail}...`);
+          const transporter = nodemailer.createTransport({
+            host: process.env.SMTP_HOST,
+            port: Number(process.env.SMTP_PORT || 587),
+            secure: Number(process.env.SMTP_PORT) === 465,
+            auth: {
+              user: process.env.SMTP_USER,
+              pass: process.env.SMTP_PASS,
+            },
+            connectionTimeout: 2500,
+            greetingTimeout: 2500,
+            socketTimeout: 2500,
+          });
+
+          await withTimeout(
+            transporter.sendMail({
+              from: process.env.SMTP_FROM || `"SynthArchitecture" <${process.env.SMTP_USER}>`,
+              to: trimmedEmail,
+              subject: subject,
+              text: textBody,
+              html: htmlBody,
+            }),
+            3000,
+            "SMTP delivery timed out"
+          );
+
+          console.log(`OTP successfully sent via SMTP to ${trimmedEmail}.`);
+          return res.json({ success: true, simulated: false });
+        } catch (err: any) {
+          console.warn(`SMTP delivery failed: ${err.message}`);
+        }
+      }
+
+      // 3. Sandbox / Simulation Fallback (routed to system notifications)
+      console.log(`Sandbox simulation routing code for: ${trimmedEmail}`);
+      return res.json({
+        success: true,
+        simulated: true,
+        code: otpCode,
+        message: "Sandbox simulation delivery has successfully routed the verification code."
+      });
+
+    } catch (error: any) {
+      console.error("Error sending OTP:", error);
+      res.status(500).json({ error: error.message || "Internal server error" });
+    }
+  });
+
+  // API route to verify OTP
+  app.post("/api/verify-otp", (req: express.Request, res: express.Response) => {
+    try {
+      const { email, code } = req.body;
+      if (!email || typeof email !== "string") {
+        return res.status(400).json({ error: "Email is required" });
+      }
+      if (!code || typeof code !== "string") {
+        return res.status(400).json({ error: "Verification code is required" });
+      }
+
+      const trimmedEmail = email.trim().toLowerCase();
+      const trimmedCode = code.trim();
+
+      const record = otpStore.get(trimmedEmail);
+      if (!record) {
+        return res.status(400).json({ error: "No active verification request found for this email address. Please request a new OTP." });
+      }
+
+      if (Date.now() > record.expiresAt) {
+        otpStore.delete(trimmedEmail);
+        return res.status(400).json({ error: "Verification code has expired. Please request a new OTP." });
+      }
+
+      if (record.code !== trimmedCode) {
+        return res.status(400).json({ error: "Invalid verification code. Please check the code and try again." });
+      }
+
+      // OTP is valid! Remove from store and log in
+      otpStore.delete(trimmedEmail);
+      return res.json({
+        success: true,
+        displayName: record.displayName,
+        email: trimmedEmail
+      });
+
+    } catch (error: any) {
+      console.error("Error verifying OTP:", error);
+      res.status(500).json({ error: error.message || "Internal server error" });
+    }
+  });
 
   // API route to get current status of API keys (whether they are set)
   app.get("/api/key-status", (_req: express.Request, res: express.Response) => {
